@@ -13,7 +13,10 @@ import (
 type mwOptions struct {
 	opNameFunc    func(r *http.Request) string
 	spanFilter    func(r *http.Request) bool
+	// NOTE: keep spanObserver for compatibility
 	spanObserver  func(span opentracing.Span, r *http.Request)
+	spanOnStart   func(span opentracing.Span, r *http.Request)
+	spanOnFinish  func(span opentracing.Span, r *http.Request)
 	urlTagFunc    func(u *url.URL) string
 	componentName string
 }
@@ -53,6 +56,24 @@ func MWSpanObserver(f func(span opentracing.Span, r *http.Request)) MWOption {
 		options.spanObserver = f
 	}
 }
+
+// MWSpanOnStart returns a MWOption that observe the span right after the span started
+// for the server-side span.
+func MWSpanOnStart(f func(span opentracing.Span, r *http.Request)) MWOption {
+	return func(options *mwOptions) {
+		options.spanOnStart = f
+	}
+}
+
+// MWSpanOnFinish returns MWOption that observe the span right before the span finished
+// for the server-side span.
+func MWSpanOnFinish(f func(span opentracing.Span, r *http.Request)) MWOption {
+	return func(options *mwOptions) {
+		options.spanOnFinish = f
+	}
+}
+
+func spanNoopObserver(span opentracing.Span, r *http.Request) {}
 
 // MWURLTagFunc returns a MWOption that uses given function f
 // to set the span's http.url tag. Can be used to change the default
@@ -100,7 +121,9 @@ func MiddlewareFunc(tr opentracing.Tracer, h http.HandlerFunc, options ...MWOpti
 			return "HTTP " + r.Method
 		},
 		spanFilter:   func(r *http.Request) bool { return true },
-		spanObserver: func(span opentracing.Span, r *http.Request) {},
+		spanObserver: spanNoopObserver,
+		spanOnStart:  spanNoopObserver,
+		spanOnFinish: spanNoopObserver,
 		urlTagFunc: func(u *url.URL) string {
 			return u.String()
 		},
@@ -118,6 +141,7 @@ func MiddlewareFunc(tr opentracing.Tracer, h http.HandlerFunc, options ...MWOpti
 		ext.HTTPMethod.Set(sp, r.Method)
 		ext.HTTPUrl.Set(sp, opts.urlTagFunc(r.URL))
 		opts.spanObserver(sp, r)
+		opts.spanOnStart(sp, r)
 
 		// set component name, use "net/http" if caller does not specify
 		componentName := opts.componentName
@@ -134,6 +158,7 @@ func MiddlewareFunc(tr opentracing.Tracer, h http.HandlerFunc, options ...MWOpti
 			if sct.status >= http.StatusInternalServerError || !sct.wroteheader {
 				ext.Error.Set(sp, true)
 			}
+			opts.spanOnFinish(sp, r)
 			sp.Finish()
 		}()
 
