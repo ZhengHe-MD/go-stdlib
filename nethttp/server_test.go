@@ -1,6 +1,7 @@
 package nethttp
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -63,11 +64,16 @@ func TestSpanObserverOption(t *testing.T) {
 	spanObserverfn := func(sp opentracing.Span, r *http.Request) {
 		sp.SetTag("http.uri", r.URL.EscapedPath())
 	}
-	spanOnStartfn := func(sp opentracing.Span, r *http.Request) {
+	spanOnStartfn := func(ctx context.Context, sp opentracing.Span, r *http.Request) context.Context {
 		sp.SetTag("started", "true")
+		ctx = context.WithValue(ctx, "finished", "true")
+		return ctx
 	}
-	spanOnFinishfn := func(sp opentracing.Span, r *http.Request) {
-		sp.SetTag("finished", "true")
+	spanOnFinishfn := func(ctx context.Context, sp opentracing.Span, r *http.Request) context.Context {
+		v := ctx.Value("finished")
+		vv, _ := v.(string)
+		sp.SetTag("finished", vv)
+		return ctx
 	}
 	wantTags := map[string]interface{}{"http.uri": "/"}
 
@@ -81,7 +87,8 @@ func TestSpanObserverOption(t *testing.T) {
 		{[]MWOption{MWSpanObserver(spanObserverfn)}, "HTTP GET", wantTags},
 		{[]MWOption{OperationNameFunc(opNamefn), MWSpanObserver(spanObserverfn)}, "HTTP GET: /root", wantTags},
 		{[]MWOption{MWSpanOnStart(spanOnStartfn)}, "HTTP GET", map[string]interface{}{"started": "true"}},
-		{[]MWOption{MWSpanOnFinish(spanOnFinishfn)}, "HTTP GET", map[string]interface{}{"finished": "true"}},
+		{[]MWOption{MWSpanOnFinish(spanOnFinishfn)}, "HTTP GET", map[string]interface{}{"finished": ""}},
+		{[]MWOption{MWSpanOnStart(spanOnStartfn), MWSpanOnFinish(spanOnFinishfn)}, "HTTP GET", map[string]interface{}{"started": "true", "finished": "true"}},
 	}
 
 	for _, tt := range tests {

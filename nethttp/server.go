@@ -3,6 +3,7 @@
 package nethttp
 
 import (
+	"context"
 	"net/http"
 	"net/url"
 
@@ -15,8 +16,8 @@ type mwOptions struct {
 	spanFilter    func(r *http.Request) bool
 	// NOTE: keep spanObserver for compatibility
 	spanObserver  func(span opentracing.Span, r *http.Request)
-	spanOnStart   func(span opentracing.Span, r *http.Request)
-	spanOnFinish  func(span opentracing.Span, r *http.Request)
+	spanOnStart   func(ctx context.Context, span opentracing.Span, r *http.Request) context.Context
+	spanOnFinish  func(ctx context.Context, span opentracing.Span, r *http.Request) context.Context
 	urlTagFunc    func(u *url.URL) string
 	componentName string
 }
@@ -59,7 +60,7 @@ func MWSpanObserver(f func(span opentracing.Span, r *http.Request)) MWOption {
 
 // MWSpanOnStart returns a MWOption that observe the span right after the span started
 // for the server-side span.
-func MWSpanOnStart(f func(span opentracing.Span, r *http.Request)) MWOption {
+func MWSpanOnStart(f func(ctx context.Context, span opentracing.Span, r *http.Request) context.Context) MWOption {
 	return func(options *mwOptions) {
 		options.spanOnStart = f
 	}
@@ -67,13 +68,14 @@ func MWSpanOnStart(f func(span opentracing.Span, r *http.Request)) MWOption {
 
 // MWSpanOnFinish returns MWOption that observe the span right before the span finished
 // for the server-side span.
-func MWSpanOnFinish(f func(span opentracing.Span, r *http.Request)) MWOption {
+func MWSpanOnFinish(f func(ctx context.Context, span opentracing.Span, r *http.Request) context.Context) MWOption {
 	return func(options *mwOptions) {
 		options.spanOnFinish = f
 	}
 }
 
-func spanNoopObserver(span opentracing.Span, r *http.Request) {}
+func noopObserver(span opentracing.Span, r *http.Request) {}
+func noopHook(ctx context.Context, span opentracing.Span, r *http.Request) context.Context {return ctx}
 
 // MWURLTagFunc returns a MWOption that uses given function f
 // to set the span's http.url tag. Can be used to change the default
@@ -121,9 +123,9 @@ func MiddlewareFunc(tr opentracing.Tracer, h http.HandlerFunc, options ...MWOpti
 			return "HTTP " + r.Method
 		},
 		spanFilter:   func(r *http.Request) bool { return true },
-		spanObserver: spanNoopObserver,
-		spanOnStart:  spanNoopObserver,
-		spanOnFinish: spanNoopObserver,
+		spanObserver: noopObserver,
+		spanOnStart:  noopHook,
+		spanOnFinish: noopHook,
 		urlTagFunc: func(u *url.URL) string {
 			return u.String()
 		},
@@ -136,12 +138,13 @@ func MiddlewareFunc(tr opentracing.Tracer, h http.HandlerFunc, options ...MWOpti
 			h(w, r)
 			return
 		}
-		ctx, _ := tr.Extract(opentracing.HTTPHeaders, opentracing.HTTPHeadersCarrier(r.Header))
-		sp := tr.StartSpan(opts.opNameFunc(r), ext.RPCServerOption(ctx))
+		spanCtx, _ := tr.Extract(opentracing.HTTPHeaders, opentracing.HTTPHeadersCarrier(r.Header))
+		sp := tr.StartSpan(opts.opNameFunc(r), ext.RPCServerOption(spanCtx))
 		ext.HTTPMethod.Set(sp, r.Method)
 		ext.HTTPUrl.Set(sp, opts.urlTagFunc(r.URL))
 		opts.spanObserver(sp, r)
-		opts.spanOnStart(sp, r)
+		ctx := r.Context()
+		ctx = opts.spanOnStart(ctx, sp, r)
 
 		// set component name, use "net/http" if caller does not specify
 		componentName := opts.componentName
@@ -158,7 +161,7 @@ func MiddlewareFunc(tr opentracing.Tracer, h http.HandlerFunc, options ...MWOpti
 			if sct.status >= http.StatusInternalServerError || !sct.wroteheader {
 				ext.Error.Set(sp, true)
 			}
-			opts.spanOnFinish(sp, r)
+			opts.spanOnFinish(ctx, sp, r)
 			sp.Finish()
 		}()
 
